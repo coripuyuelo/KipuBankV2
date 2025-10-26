@@ -2,7 +2,7 @@
 
 Contrato inteligente que permite a los usuarios depositar y retirar ETH en una bóveda personal, aplicando límites por transacción y un límite global de fondos (BankCap).
 
-Este proyecto forma parte del Módulo 2 del curso Ethereum Developer Pack de la Fundación Kipu.
+Este proyecto forma parte del Módulo 3 del curso Ethereum Developer Pack de la Fundación Kipu.
 
 ---
 
