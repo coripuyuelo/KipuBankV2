@@ -1,52 +1,78 @@
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/// @title KipuBank - Contrato inteligente de tokens nativos ETH
+/// @title KipuBank - native ETH vault per user
 /// @author Corina Puyuelo
-/// @notice Permite a los usuarios depositar y retirar ETH.
+/// @notice This contract allows users to deposit and withdraw ETH up to a per-tx withdrawalLimit and global bankCap.
+/// @dev Follows checks-effects-interactions, custom errors, and minimized storage accesses.
+
 contract KipuBank {
 
     // ===== VARIABLES =====
 
-    /// @notice Limite de ETH que puede almacenar el contrato
+    /// @notice Maximum total ETH the contract accepts (set at deployment)
     uint256 public immutable bankCap;
 
-    /// @notice Limite de retiro por transacción
+    /// @notice Maximum amount a user can withdraw in a single transaction (set at deployment)
     uint256 public immutable withdrawalLimit;
 
-    /// @notice Balance por usuario
+    /// @notice User balances (vault)
     mapping(address => uint256) private balances;
 
-    /// @notice Depositos por usuario
+    /// @notice Number of deposits per user
     mapping(address => uint256) public depositCount;
 
-    /// @notice Retiros por usuario
+    /// @notice Number of withdrawals per user
     mapping(address => uint256) public withdrawalCount;
 
-    /// @notice Depositos del contrato
+    /// @notice Current total deposits stored in the contract
     uint256 public totalDeposits;
 
-    // Simple reentrancy guard
+    // ===== REENTRANCY GUARD =====
+
+    // Using simple guard pattern; 1 = unlocked, 2 = locked
     uint256 private _locked = 1;
 
     // ===== EVENTS =====
 
+    /// @notice Emitted when a user deposits ETH
+    /// @param user The depositor address
+    /// @param amount The amount of ETH deposited (wei)
     event Deposit(address indexed user, uint256 amount);
+
+    /// @notice Emitted when a user withdraws ETH
+    /// @param user The withdrawer address
+    /// @param amount The amount withdrawn (wei)
     event Withdrawal(address indexed user, uint256 amount);
 
     // ===== ERRORS =====
 
+    /// @notice Revert when zero amount is provided
     error ZeroAmount();
-    error BankCapReached();
+
+    /// @notice Revert when deposit would exceed bank cap
+    error BankCapExceeded();
+
+    /// @notice Revert when requested withdrawal is above per-tx limit
     error ExceedsWithdrawalLimit();
+
+    /// @notice Revert when user has insufficient funds
     error InsufficientBalance();
+
+    /// @notice Revert when transfer via call fails
     error TransferFailed();
+
+    /// @notice Revert when constructor params are invalid
     error InvalidParams();
+
+    /// @notice Reentrancy attempt detected
     error Reentrancy();
 
     // ===== CONSTRUCTOR =====
 
+    /// @notice Deploy the bank with a global cap and per-transaction withdrawal limit
+    /// @param _bankCap Maximum total ETH the contract will hold (wei)
+    /// @param _withdrawalLimit Maximum ETH allowed per withdrawal transaction (wei)
     constructor(uint256 _bankCap, uint256 _withdrawalLimit) {
         if (_bankCap == 0 || _withdrawalLimit == 0) revert InvalidParams();
         bankCap = _bankCap;
@@ -55,11 +81,14 @@ contract KipuBank {
 
     // ===== MODIFIERS =====
 
+    /// @notice Ensure non-zero amount argument
+    /// @param _amount The amount to check
     modifier nonZero(uint256 _amount) {
         if (_amount == 0) revert ZeroAmount();
         _;
     }
 
+    /// @notice Simple reentrancy guard
     modifier nonReentrant() {
         if (_locked != 1) revert Reentrancy();
         _locked = 2;
@@ -69,21 +98,52 @@ contract KipuBank {
 
     // ===== FUNCTIONS =====
 
-    /// @notice Permite depositar ETH en la cuenta del usuario
+    /// @notice Deposit ETH into sender's vault
+    /// @dev Uses local variables to minimize storage reads/writes.
     function deposit() external payable nonZero(msg.value) {
-        if (totalDeposits + msg.value > bankCap) revert BankCapReached();
-        _handleDeposit(msg.sender, msg.value);
+        // read once
+        uint256 currentTotal = totalDeposits;
+        uint256 newTotal = currentTotal + msg.value;
+
+        // check
+        if (newTotal > bankCap) revert BankCapExceeded();
+
+        // effects - minimize storage accesses by using locals
+        uint256 userBalance = balances[msg.sender];
+        userBalance += msg.value;
+        // write back
+        balances[msg.sender] = userBalance;
+
+        // deposit count increment -- safe to use unchecked (practically impossible to overflow)
+        unchecked { depositCount[msg.sender]++; }
+
+        // update totalDeposits after the check (no overflow possible because newTotal <= bankCap)
+        totalDeposits = newTotal;
+
+        // interaction last (none here) and emit
+        emit Deposit(msg.sender, msg.value);
     }
 
-    /// @notice Permite retirar ETH hasta limite por TX
+    /// @notice Withdraw up to withdrawalLimit in a single transaction
+    /// @param _amount Amount in wei to withdraw
     function withdraw(uint256 _amount) external nonZero(_amount) nonReentrant {
-        if (_amount > balances[msg.sender]) revert InsufficientBalance();
+        // read balance once
+        uint256 userBalance = balances[msg.sender];
+
+        // checks
+        if (_amount > userBalance) revert InsufficientBalance();
         if (_amount > withdrawalLimit) revert ExceedsWithdrawalLimit();
 
         // effects
-        balances[msg.sender] -= _amount;
-        totalDeposits -= _amount;
-        unchecked { withdrawalCount[msg.sender]++; }
+        uint256 newUserBalance = userBalance - _amount;
+        balances[msg.sender] = newUserBalance;
+
+        // update totalDeposits (we already ensured userBalance >= _amount so no underflow)
+        // Using unchecked is safe because subtraction cannot underflow due to previous check.
+        unchecked {
+            totalDeposits -= _amount;
+            withdrawalCount[msg.sender]++;
+        }
 
         // interaction
         (bool success, ) = msg.sender.call{value: _amount}("");
@@ -92,26 +152,29 @@ contract KipuBank {
         emit Withdrawal(msg.sender, _amount);
     }
 
-    /// @notice Retorna el balance de un usuario
-    function getBalance(address _user) external view returns (uint256) {
+    /// @notice Returns the balance of a user
+    /// @param _user Address to query
+    /// @return balance The user's vault balance in wei
+    function getBalance(address _user) external view returns (uint256 balance) {
         return balances[_user];
     }
 
-    /// @notice Permite recibir depositos
-    receive() external payable {
-        if (msg.value == 0) revert ZeroAmount();
-        if (totalDeposits + msg.value > bankCap) revert BankCapReached();
-        _handleDeposit(msg.sender, msg.value);
-    }
+    /// @notice Fallback receive to accept ETH directly
+    /// @dev Mirrors deposit() logic but inlined for gas efficiency; uses same checks and effects.
+    receive() external payable nonZero(msg.value) {
+        uint256 currentTotal = totalDeposits;
+        uint256 newTotal = currentTotal + msg.value;
 
-    /// @notice Funcion privada
+        if (newTotal > bankCap) revert BankCapExceeded();
 
-    function _handleDeposit(address _from, uint256 _amount) private {
-        unchecked {
-            balances[_from] += _amount;
-            depositCount[_from]++;
-        }
-        totalDeposits += _amount;
-        emit Deposit(_from, _amount);
+        uint256 userBalance = balances[msg.sender];
+        userBalance += msg.value;
+        balances[msg.sender] = userBalance;
+
+        unchecked { depositCount[msg.sender]++; }
+
+        totalDeposits = newTotal;
+
+        emit Deposit(msg.sender, msg.value);
     }
 }
