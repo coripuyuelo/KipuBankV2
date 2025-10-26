@@ -74,7 +74,7 @@ El contrato aplica buenas prácticas de seguridad, errores personalizados y emis
 - Red: Sepolia Testnet
 - Dirección del Contrato: 0x0AB7CDe4782b37B6f9b1Fcdf715f1aF11a0a7fbA
 - Contrato: [Ver en Etherscan](https://sepolia.etherscan.io/address/0x0AB7CDe4782b37B6f9b1Fcdf715f1aF11a0a7fbA#code)  
-- bankCap: 100 ETH
+- bankCap: 25 ETH
 - withdrawalLimit: 1 ETH
 
 ---
